@@ -128,6 +128,15 @@ mod partial_this {
     }
 }
 
+pub trait CtorThisType {
+    type UninitThis;
+    type InitedThis;
+}
+
+pub trait Ctor: CtorThisType {
+    fn ctor(this: Self::UninitThis) -> Self::InitedThis;
+}
+
 #[cfg(test)]
 #[allow(non_camel_case_types)]
 mod tests {
@@ -140,73 +149,91 @@ mod tests {
         pub bar: f32,
     }
 
-    #[derive(Debug, Clone, Copy, Default)]
-    pub struct field_foo;
-    #[derive(Debug, Clone, Copy, Default)]
-    pub struct field_bar;
-
-    impl Field for field_foo {
-        type Id = lambda::One;
-        type Type = i32;
-    }
-
-    impl Field for field_bar {
-        type Id = lambda::Two;
-        type Type = f32;
-    }
-
-    pub trait set_field_foo {
-        type Output;
-        fn foo(self, val: i32) -> Self::Output;
-    }
-
-    pub trait set_field_bar {
-        type Output;
-        fn bar(self, val: f32) -> Self::Output;
-    }
-
-    impl<C> set_field_foo for PartialThis<C>
-    where
-        C: CtorTarget<Target = Some>,
-        C: CtorChain<
-                <field_foo as Field>::Id,
-                lambda::IsEq<<C as CtorTarget>::Id, <field_foo as Field>::Id>,
-                Current = field_foo,
-            >,
-    {
-        type Output = PartialThis<C::Removed>;
-
-        fn foo(self, val: i32) -> Self::Output {
-            unsafe {
-                let c = self.take_chain();
-                core::ptr::write(&mut (*c.this().as_ptr()).foo, val);
-                PartialThis::new(c.done())
-            }
+    impl Ctor for Some {
+        fn ctor(this: Self::UninitThis) -> Self::InitedThis {
+            this.foo(123).bar(456.789)
         }
     }
 
-    impl<C> set_field_bar for PartialThis<C>
-    where
-        C: CtorTarget<Target = Some>,
-        C: CtorChain<
-                <field_bar as Field>::Id,
-                lambda::IsEq<<C as CtorTarget>::Id, <field_bar as Field>::Id>,
-                Current = field_bar,
-            >,
-    {
-        type Output = PartialThis<C::Removed>;
+    use should_be_generated_by_macro::{set_field_bar, set_field_foo};
+    mod should_be_generated_by_macro {
+        use super::*;
+        #[derive(Debug, Clone, Copy, Default)]
+        pub struct field_foo;
+        #[derive(Debug, Clone, Copy, Default)]
+        pub struct field_bar;
 
-        fn bar(self, val: f32) -> Self::Output {
-            unsafe {
-                let c = self.take_chain();
-                core::ptr::write(&mut (*c.this().as_ptr()).bar, val);
-                PartialThis::new(c.done())
+        impl Field for field_foo {
+            type Id = lambda::One;
+            type Type = i32;
+        }
+
+        impl Field for field_bar {
+            type Id = lambda::Two;
+            type Type = f32;
+        }
+
+        pub trait set_field_foo {
+            type Output;
+            fn foo(self, val: i32) -> Self::Output;
+        }
+
+        pub trait set_field_bar {
+            type Output;
+            fn bar(self, val: f32) -> Self::Output;
+        }
+
+        impl<C> set_field_foo for PartialThis<C>
+        where
+            C: CtorTarget<Target = Some>,
+            C: CtorChain<
+                    <field_foo as Field>::Id,
+                    lambda::IsEq<<C as CtorTarget>::Id, <field_foo as Field>::Id>,
+                    Current = field_foo,
+                >,
+        {
+            type Output = PartialThis<C::Removed>;
+
+            fn foo(self, val: i32) -> Self::Output {
+                unsafe {
+                    let c = self.take_chain();
+                    core::ptr::write(&mut (*c.this().as_ptr()).foo, val);
+                    PartialThis::new(c.done())
+                }
             }
+        }
+
+        impl<C> set_field_bar for PartialThis<C>
+        where
+            C: CtorTarget<Target = Some>,
+            C: CtorChain<
+                    <field_bar as Field>::Id,
+                    lambda::IsEq<<C as CtorTarget>::Id, <field_bar as Field>::Id>,
+                    Current = field_bar,
+                >,
+        {
+            type Output = PartialThis<C::Removed>;
+
+            fn bar(self, val: f32) -> Self::Output {
+                unsafe {
+                    let c = self.take_chain();
+                    core::ptr::write(&mut (*c.this().as_ptr()).bar, val);
+                    PartialThis::new(c.done())
+                }
+            }
+        }
+
+        impl CtorThisType for Some {
+            type UninitThis =
+                PartialThis<FieldChain<FieldChain<CtorThis<Some>, field_foo>, field_bar>>;
+            type InitedThis = PartialThis<CtorThis<Some>>;
         }
     }
 
     #[test]
     fn test1() {
+        use should_be_generated_by_macro::*;
+
         let mut some = Some { foo: 0, bar: 0.0 };
         let c: PartialThis<FieldChain<FieldChain<CtorThis<Some>, field_foo>, field_bar>> =
             PartialThis::new(FieldChain::new(FieldChain::new(CtorThis::new(
