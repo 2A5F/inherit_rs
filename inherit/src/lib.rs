@@ -3,160 +3,135 @@
 #![allow(confusable_idents)]
 #![allow(uncommon_codepoints)]
 
-use core::marker::PhantomData;
-
-use crate::lambda::{IsEq, Type};
+use core::{marker::PhantomData, ptr::NonNull};
 
 pub mod lambda;
 pub mod meta;
 
-pub use traits::*;
-mod traits {
-    use super::*;
+pub trait Field {
+    type Id: lambda::Λ;
+    type Type;
+}
 
-    pub trait ChainId {
-        type Id: lambda::Λ;
-    }
+pub trait CtorTarget {
+    type Id: lambda::Λ;
+    type Target;
+    unsafe fn this(&self) -> NonNull<Self::Target>;
+}
 
-    pub trait GetThis<This> {
-        unsafe fn this(&self) -> *mut This;
-    }
+pub trait CtorChain<N, C>: CtorTarget {
+    type Removed;
+    type Current;
 
-    pub trait Field<T>: Default + ChainId {
-        type Type;
+    unsafe fn done(self) -> Self::Removed;
+}
 
-        unsafe fn write(&self, this: *mut T, val: Self::Type);
-    }
-
-    pub trait Fields<N: lambda::Λ>: ChainId {
-        type Removed: lambda::Λ;
-        type Current: lambda::Λ;
-    }
-
-    pub trait FieldsCond<N: lambda::Λ, Cond: lambda::Λ>: Sized + Fields<N> {
-        fn remove_chain(
-            self,
-        ) -> (
-            <<Self as Fields<N>>::Removed as lambda::Λ>::Type,
-            <<Self as Fields<N>>::Current as lambda::Λ>::Type,
-        );
-    }
+pub trait TakeChain {
+    type Chain;
+    fn take_chain(self) -> Self::Chain;
 }
 
 pub use ctor_this::CtorThis;
 mod ctor_this {
     use super::*;
-
     #[derive(Debug)]
-    pub struct CtorThis<This>(*mut This);
-
-    impl<This> CtorThis<This> {
-        pub fn new(this: *mut This) -> Self {
-            CtorThis(this)
+    pub struct CtorThis<T>(NonNull<T>);
+    impl<T> CtorThis<T> {
+        pub fn new(this: NonNull<T>) -> Self {
+            Self(this)
         }
     }
-
-    impl<This> ChainId for CtorThis<This> {
+    impl<T> CtorTarget for CtorThis<T> {
         type Id = lambda::Zero;
-    }
-    impl<This> GetThis<This> for CtorThis<This> {
-        unsafe fn this(&self) -> *mut This {
+        type Target = T;
+
+        unsafe fn this(&self) -> NonNull<Self::Target> {
             self.0
         }
     }
+    impl<T, N, C> CtorChain<N, C> for CtorThis<T> {
+        type Removed = Self;
+        type Current = ();
 
-    impl<N: lambda::Λ, This> Fields<N> for CtorThis<This> {
-        type Removed = Type<Self>;
-        type Current = Type<()>;
-    }
-
-    impl<N: lambda::Λ, Cond: lambda::Λ, This> FieldsCond<N, Cond> for CtorThis<This> {
-        fn remove_chain(self) -> (Self, ()) {
-            (self, ())
+        unsafe fn done(self) -> Self::Removed {
+            self
         }
     }
 }
 
 pub use field_chain::FieldChain;
+
 mod field_chain {
     use super::*;
-    use lambda::*;
+    use crate::lambda::{False, IsEq, True};
 
-    #[derive(Debug, Clone, Copy, Default)]
-    pub struct FieldChain<Target, Parent, Current>(Parent, PhantomData<(Target, Parent, Current)>);
-
-    impl<Target, Parent, Current> FieldChain<Target, Parent, Current> {
-        pub fn new(parent: Parent) -> Self {
-            FieldChain(parent, PhantomData)
+    #[derive(Debug)]
+    pub struct FieldChain<P, F>(P, PhantomData<F>);
+    impl<P, F: Field> FieldChain<P, F> {
+        pub fn new(parent: P) -> Self {
+            Self(parent, PhantomData)
         }
     }
-
-    impl<Target, Parent, Current: ChainId> ChainId for FieldChain<Target, Parent, Current> {
-        type Id = Current::Id;
-    }
-
-    impl<Target, Parent, Current> GetThis<Target> for FieldChain<Target, Parent, Current>
+    impl<P, F: Field> CtorTarget for FieldChain<P, F>
     where
-        Parent: GetThis<Target>,
+        P: CtorTarget,
     {
-        unsafe fn this(&self) -> *mut Target {
+        type Id = F::Id;
+        type Target = P::Target;
+
+        unsafe fn this(&self) -> NonNull<Self::Target> {
             unsafe { self.0.this() }
         }
     }
-
-    impl<Target, Parent, Current, N: Λ> Fields<N> for FieldChain<Target, Parent, Current>
+    impl<P, F: Field, N: lambda::Λ> CtorChain<N, True> for FieldChain<P, F>
     where
-        Current: Field<Target>,
-        Parent: Fields<N>,
+        P: CtorTarget,
+        P: CtorChain<N, IsEq<N, F::Id>>,
     {
-        type Removed = If<
-            IsEq<Self::Id, N>,
-            Type<Parent>,
-            Type<FieldChain<Target, <Parent::Removed as Λ>::Type, Current>>,
-        >;
-        type Current = If<IsEq<Self::Id, N>, Type<Current>, Parent::Current>;
-    }
+        type Removed = P;
+        type Current = F;
 
-    impl<Target, Parent, Current, N: Λ> FieldsCond<N, True> for FieldChain<Target, Parent, Current>
-    where
-        Current: Field<Target>,
-        Parent: Fields<N>,
-        Self: Fields<N, Removed = Type<Parent>, Current = Type<Current>>,
-    {
-        fn remove_chain(self) -> (Parent, Current) {
-            (self.0, Default::default())
+        unsafe fn done(self) -> Self::Removed {
+            self.0
         }
     }
-
-    impl<Target, Parent, Current, N: Λ> FieldsCond<N, False> for FieldChain<Target, Parent, Current>
+    impl<P, F: Field, N: lambda::Λ> CtorChain<N, False> for FieldChain<P, F>
     where
-        Current: Field<Target>,
-        Parent: FieldsCond<N, IsEq<<Parent as ChainId>::Id, N>>,
-        Self: Fields<
-                N,
-                Removed = Type<FieldChain<Target, <Parent::Removed as Λ>::Type, Current>>,
-                Current = Parent::Current,
-            >,
+        P: CtorTarget,
+        P: CtorChain<N, IsEq<N, <P as CtorTarget>::Id>>,
     {
-        fn remove_chain(
-            self,
-        ) -> (
-            <<Self as Fields<N>>::Removed as lambda::Λ>::Type,
-            <<Self as Fields<N>>::Current as lambda::Λ>::Type,
-        ) {
-            let (parent, current) = self.0.remove_chain();
-            (FieldChain(parent, PhantomData), current)
+        type Removed = FieldChain<P::Removed, F>;
+        type Current = P::Current;
+
+        unsafe fn done(self) -> Self::Removed {
+            unsafe { FieldChain::new(self.0.done()) }
+        }
+    }
+}
+
+pub use partial_this::PartialThis;
+mod partial_this {
+    use super::*;
+    #[derive(Debug)]
+    pub struct PartialThis<C>(C);
+
+    impl<C> PartialThis<C> {
+        pub fn new(chain: C) -> Self {
+            Self(chain)
+        }
+    }
+    impl<C> TakeChain for PartialThis<C> {
+        type Chain = C;
+        fn take_chain(self) -> Self::Chain {
+            self.0
         }
     }
 }
 
 #[cfg(test)]
 #[allow(non_camel_case_types)]
-pub mod tests {
-    use core::mem::MaybeUninit;
-
+mod tests {
     use super::*;
-
     extern crate std;
 
     #[derive(Debug)]
@@ -170,26 +145,14 @@ pub mod tests {
     #[derive(Debug, Clone, Copy, Default)]
     pub struct field_bar;
 
-    impl ChainId for field_foo {
+    impl Field for field_foo {
         type Id = lambda::One;
-    }
-    impl Field<Some> for field_foo {
         type Type = i32;
-
-        unsafe fn write(&self, this: *mut Some, val: Self::Type) {
-            unsafe { core::ptr::write(&mut (*this).foo, val) }
-        }
     }
 
-    impl ChainId for field_bar {
+    impl Field for field_bar {
         type Id = lambda::Two;
-    }
-    impl Field<Some> for field_bar {
         type Type = f32;
-
-        unsafe fn write(&self, this: *mut Some, val: Self::Type) {
-            unsafe { core::ptr::write(&mut (*this).bar, val) }
-        }
     }
 
     pub trait set_field_foo {
@@ -197,76 +160,75 @@ pub mod tests {
         fn foo(self, val: i32) -> Self::Output;
     }
 
-    impl<T> set_field_foo for T
-    where
-        T: ChainId,
-        T: GetThis<Some>,
-        T: FieldsCond<
-                <field_foo as ChainId>::Id,
-                IsEq<<T as ChainId>::Id, <field_foo as ChainId>::Id>,
-            >,
-        T: Fields<<field_foo as ChainId>::Id, Current = Type<field_foo>>,
-    {
-        type Output = <T::Removed as lambda::Λ>::Type;
-        fn foo(self, val: i32) -> Self::Output {
-            let this = unsafe { self.this() };
-            let (next, current) = self.remove_chain();
-            unsafe { current.write(this, val) };
-            next
-        }
-    }
     pub trait set_field_bar {
         type Output;
         fn bar(self, val: f32) -> Self::Output;
     }
 
-    impl<T> set_field_bar for T
+    impl<C> set_field_foo for PartialThis<C>
     where
-        T: ChainId,
-        T: GetThis<Some>,
-        T: FieldsCond<
-                <field_bar as ChainId>::Id,
-                IsEq<<T as ChainId>::Id, <field_bar as ChainId>::Id>,
+        C: CtorTarget<Target = Some>,
+        C: CtorChain<
+                <field_foo as Field>::Id,
+                lambda::IsEq<<C as CtorTarget>::Id, <field_foo as Field>::Id>,
+                Current = field_foo,
             >,
-        T: Fields<<field_bar as ChainId>::Id, Current = Type<field_bar>>,
     {
-        type Output = <T::Removed as lambda::Λ>::Type;
+        type Output = PartialThis<C::Removed>;
+
+        fn foo(self, val: i32) -> Self::Output {
+            unsafe {
+                let c = self.take_chain();
+                core::ptr::write(&mut (*c.this().as_ptr()).foo, val);
+                PartialThis::new(c.done())
+            }
+        }
+    }
+
+    impl<C> set_field_bar for PartialThis<C>
+    where
+        C: CtorTarget<Target = Some>,
+        C: CtorChain<
+                <field_bar as Field>::Id,
+                lambda::IsEq<<C as CtorTarget>::Id, <field_bar as Field>::Id>,
+                Current = field_bar,
+            >,
+    {
+        type Output = PartialThis<C::Removed>;
+
         fn bar(self, val: f32) -> Self::Output {
-            let this = unsafe { self.this() };
-            let (next, current) = self.remove_chain();
-            unsafe { current.write(this, val) };
-            next
+            unsafe {
+                let c = self.take_chain();
+                core::ptr::write(&mut (*c.this().as_ptr()).bar, val);
+                PartialThis::new(c.done())
+            }
         }
     }
 
     #[test]
-    fn test0() {
-        let a: FieldChain<Some, FieldChain<Some, CtorThis<Some>, field_foo>, field_bar> =
-            FieldChain::new(FieldChain::new(CtorThis::new(core::ptr::null_mut())));
-        let r = <FieldChain<Some, FieldChain<Some, CtorThis<Some>, field_foo>, field_bar> as FieldsCond<
-            lambda::Two,
-            lambda::True,
-        >>::remove_chain(a);
-        std::println!("{}", std::any::type_name_of_val(&r));
-
-        let a: FieldChain<Some, FieldChain<Some, CtorThis<Some>, field_foo>, field_bar> =
-            FieldChain::new(FieldChain::new(CtorThis::new(core::ptr::null_mut())));
-        let r = <FieldChain<Some, FieldChain<Some, CtorThis<Some>, field_foo>, field_bar> as FieldsCond<
-            lambda::One,
-            lambda::False,
-        >>::remove_chain(a);
-        std::println!("{}", std::any::type_name_of_val(&r));
-    }
-
-    #[test]
     fn test1() {
-        let mut some = MaybeUninit::<Some>::zeroed();
-        let a: FieldChain<Some, FieldChain<Some, CtorThis<Some>, field_foo>, field_bar> =
-            FieldChain::new(FieldChain::new(CtorThis::new(some.as_mut_ptr())));
-        let _ = a.foo(456).bar(123.0);
-        let some = unsafe { some.assume_init() };
+        let mut some = Some { foo: 0, bar: 0.0 };
+        let c: PartialThis<FieldChain<FieldChain<CtorThis<Some>, field_foo>, field_bar>> =
+            PartialThis::new(FieldChain::new(FieldChain::new(CtorThis::new(
+                NonNull::from_mut(&mut some),
+            ))));
+        let a = c.foo(1);
+        let b = a.bar(1.0);
+        std::println!("{:?}", b);
         std::println!("{:?}", some);
-        assert_eq!(some.foo, 456);
-        assert_eq!(some.bar, 123.0);
+        assert_eq!(some.foo, 1);
+        assert_eq!(some.bar, 1.0);
+
+        let mut some = Some { foo: 0, bar: 0.0 };
+        let c: PartialThis<FieldChain<FieldChain<CtorThis<Some>, field_foo>, field_bar>> =
+            PartialThis::new(FieldChain::new(FieldChain::new(CtorThis::new(
+                NonNull::from_mut(&mut some),
+            ))));
+        let a = c.bar(1.0);
+        let b = a.foo(1);
+        std::println!("{:?}", b);
+        std::println!("{:?}", some);
+        assert_eq!(some.foo, 1);
+        assert_eq!(some.bar, 1.0);
     }
 }
