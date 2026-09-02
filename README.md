@@ -4,6 +4,8 @@ Type-safe constructor implementation based on type level lambda calculus
 
 *For proof of concept only, no further development plans are in place.*
 
+***See https://github.com/2A5F/partial_this***
+
 The complete form looks like:
 ```rust
 pub struct Foo {
